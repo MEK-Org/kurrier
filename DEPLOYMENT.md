@@ -101,17 +101,21 @@ sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plug
 # 5. Enable and start Docker daemon
 sudo systemctl enable --now docker
 
-# 6. (Optional) Add operator user to the docker group
+# 6. Add operator user to the docker group
 sudo usermod -aG docker "$USER"
+
+# 7. Apply group membership to the current shell session (or log out and re-login)
+newgrp docker
 ```
 
 ### Preflight Verification
-Verify that Docker and Compose are operational:
+Verify that Docker and Compose are operational and accessible without `sudo`:
 ```bash
 docker --version
 docker compose version
-sudo docker info >/dev/null && echo "✅ Docker daemon is running"
+docker info >/dev/null && echo "✅ Docker daemon is running and accessible without sudo"
 ```
+*(Note: If continuing in an existing shell without running `newgrp docker` or opening a fresh login session, the supplementary group will not be active in the current shell, requiring you to prefix all subsequent `docker` and `docker compose` commands with `sudo`).*
 
 ---
 
@@ -199,14 +203,18 @@ Once credentials are saved, the dashboard activates the **Add Google Account** b
 
 ### Step 4.5: Verifying Initial Sync
 1. **Monitor Worker Logs**:
-   Observe initial label discovery and message ingestion:
+   Observe initial label discovery, backfill paging, and completion:
    ```bash
-   docker compose logs -f worker | grep -E "gmail|backfill|discover"
+   docker compose logs -f worker | grep -E "\[GMAIL\]|gmail:backfill"
    ```
-   Expected:
+   Expected source-accurate log flow:
    ```text
-   [gmail:backfill-discover] discovered mailboxes for identity <id>
-   [gmail:backfill-account] backfilling messages for identity <id>
+   [GMAIL] Discovered 14 labels for user@example.com
+   [GMAIL] gmail:backfill-discover <jobId> completed
+   [GMAIL] Backfill started for user@example.com from historyId=123456
+   [GMAIL] Backfill page done for user@example.com: inserted=50, skipped=0, bytes=..., remainingQuota=..., next=true
+   [GMAIL] Backfill completed for user@example.com; queued delta catch-up
+   [GMAIL] gmail:backfill-account <jobId> completed
    ```
 2. **Verify Database Mailbox Records**:
    ```bash
@@ -357,13 +365,13 @@ cp .env.pre-cutover .env
 ```
 
 ### Step 3: Quarantine & Preserve Stack State (Do Not Blindly Wipe)
-If the new stack encountered data or runtime errors, do not blindly delete volume directories with `rm -rf`. Instead, quarantine the runtime data directories by renaming them into a timestamped directory so all diagnostic state is preserved for forensic recovery:
+If the new stack encountered data or runtime errors, do not blindly delete volume directories with `rm -rf`. Instead, quarantine the runtime data directories by renaming them into a timestamped directory, preserving their relative directory paths so separate volume mounts (such as `./data` and `./garage/data`) cannot collide:
 ```bash
 QUARANTINE_DIR="./quarantine_$(date +%Y%m%d%H%M%S)"
-mkdir -p "$QUARANTINE_DIR"
 for dir in ./data ./redis_data ./typesense-data ./garage/data ./garage/meta ./baikal-data ./dav_data; do
   if [ -d "$dir" ]; then
-    mv "$dir" "$QUARANTINE_DIR/$(basename "$dir")"
+    mkdir -p "$QUARANTINE_DIR/$(dirname "$dir")"
+    mv "$dir" "$QUARANTINE_DIR/$dir"
   fi
 done
 echo "Attempted stack state safely quarantined in $QUARANTINE_DIR"

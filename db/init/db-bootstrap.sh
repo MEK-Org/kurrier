@@ -49,7 +49,7 @@ echo "✅ Postgres is ready."
 
 # Helper function to decode RFC 3986 percent-encoded characters in URL components
 urldecode() {
-  local data="${1//+/ }"
+  local data="$1"
   printf '%b' "${data//%/\\x}"
 }
 
