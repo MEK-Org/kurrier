@@ -71,6 +71,8 @@ Before performing any changes on the host:
    BAIKAL_POSTGRES_PASSWORD=strong_baikal_password
    GOOGLE_MAIL_CLIENT_ID=
    GOOGLE_MAIL_CLIENT_SECRET=
+   # Leave false for initial workspace setup; set to true once owner account exists to close public signup:
+   DISABLE_SIGNUP=false
    ```
 
 ---
@@ -126,6 +128,15 @@ Before connecting Gmail or Google Workspace accounts, you must create and regist
 > [!WARNING]
 > **No Usable OAuth Link Prior to Configuration**:
 > The interactive "Add Google Account" authorization link (`/api/oauth/google/connect`) requires valid Google OAuth application credentials. If you click the link before configuring a Client ID and Client Secret, the server will raise an error (`Google Mail OAuth is not configured`). The Kurrier UI displays a configuration modal until credentials exist.
+
+### Step 4.0: Initial Workspace Creation & Admin Signup (No Default Credentials)
+
+> [!IMPORTANT]
+> **Kurrier Has No Default Credentials**:
+> Kurrier does not seed an initial admin user or default credentials.
+> - The first user to complete registration at `/en/auth/signup` (reached via the "Create an account" link on `/auth/login`) creates the workspace and automatically becomes the workspace owner and administrator.
+> - Because registration is open by default, complete the first signup immediately upon deploying the stack.
+> - Once the workspace owner account exists, lock down public registration to prevent unauthorized signups across the network by setting `DISABLE_SIGNUP=true` in `db/.env` and recreating the web container (see Step 5 in Section 5).
 
 ### Step 4.1: Google Cloud Console Setup
 
@@ -284,6 +295,41 @@ Expected output:
 ```
 The `migrate` container will exit with code 0 once complete. `web` and `worker` will then automatically launch.
 
+### Step 5: Initial Workspace Admin Registration & Disabling Public Signup
+
+1. **Register the Initial Workspace Owner**:
+   Because Kurrier does not seed default credentials, open:
+   ```text
+   https://mail.example.com/en/auth/signup
+   ```
+   (or click "Create an account" on `/auth/login`).
+   Enter your administrator email, a secure password, and workspace name (e.g. `Silicon Familiar`). This first registration establishes the workspace and assigns owner permissions to this account.
+
+2. **Lock Down Public Signup**:
+   To prevent unauthorized user registrations across your network or tailnet, lock down signup once the owner account is registered:
+   Edit `/path/to/kurrier/db/.env` and set:
+   ```bash
+   DISABLE_SIGNUP=true
+   ```
+   Recreate the web container so Docker Compose injects the updated environment variable:
+   ```bash
+   docker compose up -d --force-recreate web
+   ```
+   *(Note: `--force-recreate web` updates only the web UI container with the new setting without interrupting PostgreSQL, Redis, or other backing services).*
+
+3. **Verify Signup Lockdown**:
+   Confirm that the signup route now redirects with `signup_disabled`:
+   ```bash
+   curl -s -i http://localhost:3000/en/auth/signup | grep -E "HTTP/|location:"
+   ```
+   **Expected**: HTTP `307 Temporary Redirect` to `/en/auth/login?message=signup_disabled`.
+
+   Confirm that the login route continues to return HTTP 200:
+   ```bash
+   curl -fsS -o /dev/null -w "%{http_code}\n" http://localhost:3000/en/auth/login
+   ```
+   **Expected**: `200`.
+
 ---
 
 ## 6. Health Checks & Verification
@@ -328,11 +374,18 @@ curl -fsS http://127.0.0.1:3900
 ```
 **Expected**: Returns an S3 XML response (e.g. `<ListAllMyBucketsResult>` or `AccessDenied`), confirming the service is listening.
 
-### 7. Web UI Availability
+### 7. Web UI Availability & Signup Lockdown
+Verify that the login route is available:
 ```bash
 curl -fsS -o /dev/null -w "%{http_code}\n" http://localhost:3000/auth/login
 ```
-**Expected**: `200`.
+**Expected**: `200` (or `307` redirecting to `/en/auth/login` which returns `200`).
+
+Verify that public registration is locked down (when `DISABLE_SIGNUP=true`):
+```bash
+curl -s -i http://localhost:3000/en/auth/signup | grep -i location
+```
+**Expected**: `location: /en/auth/login?message=signup_disabled` (HTTP 307).
 
 ### 8. Worker Proxy Health (Next.js Proxy to Nitro Worker)
 Verify that the Next.js API proxy route connects to the worker rather than failing with HTTP 500:
