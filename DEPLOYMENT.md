@@ -318,11 +318,16 @@ The `migrate` container will exit with code 0 once complete. `web` and `worker` 
    *(Note: `--force-recreate web` updates only the web UI container with the new setting without interrupting PostgreSQL, Redis, or other backing services).*
 
 3. **Verify Signup Lockdown**:
-   Confirm that the signup route now redirects with `signup_disabled`:
+   Confirm that the signup route returns HTTP 200 and embeds the Next.js redirect target to `/en/auth/login?message=signup_disabled`:
    ```bash
-   curl -s -i http://localhost:3000/en/auth/signup | grep -E "HTTP/|location:"
+   curl -s -i http://localhost:3000/en/auth/signup | grep -o -E 'HTTP/[0-9.]+ [0-9]+|NEXT_REDIRECT[^"]+' | head -n 2
    ```
-   **Expected**: HTTP `307 Temporary Redirect` to `/en/auth/login?message=signup_disabled`.
+   **Expected**:
+   ```text
+   HTTP/1.1 200
+   NEXT_REDIRECT;replace;/en/auth/login?message=signup_disabled;307;
+   ```
+   *(Note: Next.js renders an HTTP 200 page embedding the `NEXT_REDIRECT` digest target rather than issuing an HTTP 307 Location header).*
 
    Confirm that the login route continues to return HTTP 200:
    ```bash
@@ -383,9 +388,14 @@ curl -fsS -o /dev/null -w "%{http_code}\n" http://localhost:3000/auth/login
 
 Verify that public registration is locked down (when `DISABLE_SIGNUP=true`):
 ```bash
-curl -s -i http://localhost:3000/en/auth/signup | grep -i location
+curl -s -i http://localhost:3000/en/auth/signup | grep -o -E 'HTTP/[0-9.]+ [0-9]+|NEXT_REDIRECT[^"]+' | head -n 2
 ```
-**Expected**: `location: /en/auth/login?message=signup_disabled` (HTTP 307).
+**Expected**:
+```text
+HTTP/1.1 200
+NEXT_REDIRECT;replace;/en/auth/login?message=signup_disabled;307;
+```
+*(Note: Next.js renders an HTTP 200 document embedding the `NEXT_REDIRECT` digest target rather than issuing an HTTP 307 Location header).*
 
 ### 8. Worker Proxy Health (Next.js Proxy to Nitro Worker)
 Verify that the Next.js API proxy route connects to the worker rather than failing with HTTP 500:
