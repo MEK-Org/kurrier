@@ -11,16 +11,20 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
   worker:
     image: ghcr.io/kurrier-org/kurrier-worker:v4.1.0
     restart: unless-stopped
     env_file:
       - .env
     ports:
-      - "${NITRO_PORT:-3001}:3001"
+      - "127.0.0.1:${NITRO_PORT:-3001}:3001"
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
   redis:
     image: redis:8.2.2
     restart: unless-stopped
@@ -33,22 +37,22 @@ services:
     volumes:
       - ./redis_data:/data
     ports:
-      - ${REDIS_PORT}:${REDIS_PORT}
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
 
   dav:
     image: ckulka/baikal:nginx
     restart: always
     ports:
-      - "5232:80"
+      - "127.0.0.1:5232:80"
     volumes:
-      - ./dav_config:/var/www/baikal/config
+      - ./init/dav_config:/var/www/baikal/config
       - ./dav_data:/var/www/baikal/Specific
 
   typesense:
     image: typesense/typesense:29.0
     restart: unless-stopped
     ports:
-      - ${TYPESENSE_PORT}:${TYPESENSE_PORT}
+      - "127.0.0.1:${TYPESENSE_PORT:-8108}:8108"
     volumes:
       - ./typesense-data:/data
     command: >
@@ -63,17 +67,17 @@ services:
     container_name: garage
     restart: unless-stopped
     ports:
-      - "3900:3900"
-      - "3901:3901"
-      - "3902:3902"
-      - "3903:3903"
+      - "127.0.0.1:3900:3900"
+      - "127.0.0.1:3901:3901"
+      - "127.0.0.1:3902:3902"
+      - "127.0.0.1:3903:3903"
     environment:
       GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
       GARAGE_DEFAULT_ACCESS_KEY: ${GARAGE_ACCESS_KEY}
       GARAGE_DEFAULT_SECRET_KEY: ${GARAGE_SECRET_KEY}
       GARAGE_DEFAULT_BUCKET: ${GARAGE_BUCKET}
     volumes:
-      - ./garage/garage.toml:/etc/garage.toml
+      - ./init/garage/garage.toml:/etc/garage.toml
       - ./garage/data:/var/lib/garage/data
       - ./garage/meta:/var/lib/garage/meta
     command: >
@@ -86,13 +90,13 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: baikal
-      POSTGRES_PASSWORD: strong_baikal_password
+      POSTGRES_PASSWORD: ${BAIKAL_POSTGRES_PASSWORD:-strong_baikal_password}
       POSTGRES_DB: baikal
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - ./baikal-data:/var/lib/postgresql
-      - ./baikal-init:/docker-entrypoint-initdb.d
+      - ./init/baikal-init:/docker-entrypoint-initdb.d
     command: >
       postgres
       -c shared_buffers=128MB
@@ -113,10 +117,9 @@ services:
       timeout: 2s
       retries: 30
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - ./data:/var/lib/postgresql
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     command: >
       postgres
       -c shared_buffers=256MB
@@ -126,12 +129,19 @@ services:
   migrate:
     image: postgres:18
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
     environment:
       PGHOST: postgres
       PGUSER: ${POSTGRES_USER}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       PGDATABASE: ${POSTGRES_DB}
+      DATABASE_URL: ${DATABASE_URL:-}
+      DATABASE_RLS_URL: ${DATABASE_RLS_URL:-}
+      RLS_CLIENT_USER: ${RLS_CLIENT_USER:-}
+      RLS_CLIENT_PASSWORD: ${RLS_CLIENT_PASSWORD:-}
     volumes:
       - ./init:/scripts
     entrypoint: [ "/bin/bash", "/scripts/db-bootstrap.sh" ]

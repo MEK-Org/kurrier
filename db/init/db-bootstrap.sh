@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Resolve migrations directory from multiple possible mount points or relative location
+if [ -d "${MIGRATIONS_DIR:-}" ]; then
+  MIGRATIONS_PATH="$MIGRATIONS_DIR"
+elif [ -d "$SCRIPT_DIR/migrations" ]; then
+  MIGRATIONS_PATH="$SCRIPT_DIR/migrations"
+elif [ -d "/scripts/migrations" ]; then
+  MIGRATIONS_PATH="/scripts/migrations"
+elif [ -d "/db/init/migrations" ]; then
+  MIGRATIONS_PATH="/db/init/migrations"
+else
+  echo "❌ Error: Could not locate migrations directory." >&2
+  exit 1
+fi
+
 if [ -n "${DATABASE_URL:-}" ]; then
   echo "🟡 Waiting for Postgres via DATABASE_URL..."
 
@@ -10,6 +26,10 @@ if [ -n "${DATABASE_URL:-}" ]; then
 
   PSQL=(psql "$DATABASE_URL" -v ON_ERROR_STOP=1)
 else
+  PGHOST="${PGHOST:-postgres}"
+  PGUSER="${PGUSER:-${POSTGRES_USER:-postgres}}"
+  PGDATABASE="${PGDATABASE:-${POSTGRES_DB:-postgres}}"
+
   echo "🟡 Waiting for Postgres at $PGHOST..."
 
   until pg_isready -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" >/dev/null 2>&1; do
@@ -27,6 +47,53 @@ fi
 
 echo "✅ Postgres is ready."
 
+# Helper function to decode RFC 3986 percent-encoded characters in URL components
+urldecode() {
+  local data="$1"
+  printf '%b' "${data//%/\\x}"
+}
+
+# Determine RLS user and password without exposing secrets in logs
+# Priority 1: Explicit client credentials via RLS_CLIENT_USER / RLS_CLIENT_PASSWORD
+RLS_USER="${RLS_CLIENT_USER:-kurrier}"
+RLS_PASSWORD="${RLS_CLIENT_PASSWORD:-}"
+
+# Priority 2: Extract and RFC 3986 percent-decode credentials from DATABASE_RLS_URL
+if [ -z "$RLS_PASSWORD" ] && [ -n "${DATABASE_RLS_URL:-}" ]; then
+  # Parse credentials from DATABASE_RLS_URL: postgresql://[user[:password]@]host...
+  url_without_proto="${DATABASE_RLS_URL#*://}"
+  userpass="${url_without_proto%%@*}"
+  if [[ "$userpass" == *":"* ]]; then
+    parsed_user="${userpass%%:*}"
+    parsed_pw="${userpass#*:}"
+    [ -n "$parsed_user" ] && RLS_USER="$(urldecode "$parsed_user")"
+    RLS_PASSWORD="$(urldecode "$parsed_pw")"
+  elif [ -n "$userpass" ] && [ "$userpass" != "$url_without_proto" ]; then
+    RLS_USER="$(urldecode "$userpass")"
+  fi
+fi
+
+# Priority 3: Fall back to POSTGRES_PASSWORD if no RLS password is provided
+if [ -z "$RLS_PASSWORD" ]; then
+  RLS_PASSWORD="${POSTGRES_PASSWORD:-}"
+fi
+
+echo "🧩 Ensuring auth schema and database roles exist..."
+"${PSQL[@]}" <<'SQL'
+CREATE SCHEMA IF NOT EXISTS "auth";
+SQL
+
+if [ -n "$RLS_PASSWORD" ]; then
+  "${PSQL[@]}" -v rls_user="$RLS_USER" -v rls_pw="$RLS_PASSWORD" <<'SQL'
+SELECT format('CREATE ROLE %I LOGIN', :'rls_user')
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_roles WHERE rolname = :'rls_user'
+)\gexec
+
+SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'rls_user', :'rls_pw')\gexec
+SQL
+fi
+
 echo "🧩 Ensuring migrations table exists..."
 "${PSQL[@]}" <<'SQL'
 CREATE TABLE IF NOT EXISTS public.migrations (
@@ -35,8 +102,8 @@ CREATE TABLE IF NOT EXISTS public.migrations (
 );
 SQL
 
-echo "🚀 Applying new migrations..."
-for file in $(ls /scripts/migrations/*.sql | sort); do
+echo "🚀 Applying new migrations from $MIGRATIONS_PATH..."
+for file in $(ls "$MIGRATIONS_PATH"/*.sql | sort); do
   base=$(basename "$file")
   version="${base%.sql}"
 

@@ -74,33 +74,33 @@ The `OIDC_GOOGLE_*` fallback is maintained for backward compatibility with exist
 
 ## 3. Create a Google OAuth Application
 
-If you're self-hosting Kurrier and do not already have a Google OAuth application, you'll need to create one.
+If you're self-hosting Kurrier and do not already have a Google OAuth application, you'll need to create one in the Google Cloud Console.
 
-### Create a Google Cloud project
+### Google Cloud Prerequisites
 
-1. Visit the Google Cloud Console:
+1. **Google Cloud Project**: Visit the [Google Cloud Console](https://console.cloud.google.com/) and create a new project or select an existing one.
+2. **Enable Gmail API**: Under **APIs & Services → Enabled APIs & services**, click **Enable APIs and Services**, search for **Gmail API**, and enable it.
+3. **Configure OAuth Consent Screen**:
+   - Navigate to **APIs & Services → OAuth consent screen**.
+   - Select User Type (**Internal** for Google Workspace organizations, or **External** for personal Gmail accounts).
+   - Provide Application name (e.g. `Kurrier`), user support email, and developer contact information.
+   - If User Type is External and Publishing status is "Testing", add the email addresses of the accounts you plan to connect under **Test users**.
+4. **Configure OAuth Scopes**:
+   - Add the scopes listed in [Section 4](#4-required-oauth-scopes) (`openid`, `email`, `profile`, `https://www.googleapis.com/auth/gmail.modify`, `https://www.googleapis.com/auth/gmail.send`).
+5. **Create OAuth 2.0 Client Credentials**:
+   - Navigate to **APIs & Services → Credentials → Create Credentials → OAuth Client ID**.
+   - Select **Application type**: **Web application**.
+   - **Authorized JavaScript origins**:
+     - Local development/preview: `http://localhost:3000`
+     - Hosted deployment: `https://mail.example.com` (replace with your domain)
+   - **Authorized redirect URIs**:
+     - Local development/preview: `http://localhost:3000/api/oauth/google/callback`
+     - Hosted deployment: `https://mail.example.com/api/oauth/google/callback` (replace `mail.example.com` with your `WEB_URL` host)
+6. Save the resulting **Client ID** and **Client Secret**.
 
-`https://console.cloud.google.com/`
-
-2. Create a new project or select an existing project.
-
-3. Enable the **Gmail API** for the project.
-
-4. Configure the **OAuth consent screen**.
-
-5. Create an **OAuth 2.0 Client ID** for a **Web application**.
-
-6. Add your Kurrier Google callback URL as an authorized redirect URI.
-
-For example:
-
-```text
-https://mail.example.com/api/oauth/google/callback
-```
-
-Replace `mail.example.com` with the domain of your Kurrier installation.
-
-Use the generated Client ID and Client Secret either in the Kurrier dashboard or through the `GOOGLE_MAIL_*` environment variables.
+<Callout type="warning">
+    **Prerequisite Requirement**: The interactive OAuth authorization link (`/api/oauth/google/connect` / "Add Google Account") cannot function until the Client ID and Client Secret have been saved in the workspace Vault or set in the environment. Do not expect a working Google sign-in or account connection link prior to configuring these client credentials.
+</Callout>
 
 ---
 
@@ -122,27 +122,43 @@ These permissions provide the functionality required for Gmail synchronization a
 
 ## 5. Connecting a Google Account
 
-Once Google Mail OAuth is configured, go to:
+Once Google Mail OAuth application credentials are confirmed and configured:
 
-> **Dashboard → Providers → Google**
-
-Click:
-
-> **Add Google Account**
-
-You'll be redirected to Google's authorization page.
-
-Sign in with the Gmail or Google Workspace account you want to connect and grant the requested permissions.
-
-After authorization, Google redirects you back to Kurrier and the account is added to your workspace.
-
-You can connect multiple Google accounts using the same workspace OAuth configuration.
+1. Navigate to:
+   > **Dashboard → Providers → Google**
+2. When credentials are in place, the dashboard enables the:
+   > **Add Google Account**
+   button (directing to `/api/oauth/google/connect`).
+3. You will be redirected to Google's consent screen. Sign in with the target Gmail or Google Workspace account and grant the requested mailbox permissions.
+4. Google redirects back to your callback URI (`/api/oauth/google/callback`), where Kurrier verifies the grant, exchanges tokens, stores credentials in the Vault, and links the account to your workspace.
 
 ---
 
-## 6. Verification
+## 6. Creating the Email Identity & Initial Sync
 
-After connecting an account, Kurrier verifies the connection using the Gmail API.
+Connecting the Google account links credentials to your workspace, but message syncing begins once an **Email Identity** is created:
+
+1. Navigate to:
+   > **Dashboard → Identities** (`/dashboard/identities`)
+2. Click **Add Email Identity**.
+3. Select your connected **Google account** from the provider dropdown.
+4. Set Display Name (optional) and Daily Quota.
+5. Click **Add Email Identity** to save.
+
+Once saved, Kurrier enqueues background discovery and sync jobs (`gmail:backfill-discover` and `gmail:backfill-account`). The worker processes these jobs to discover Gmail labels and stream message threads into Kurrier.
+
+### Monitoring Initial Sync
+- Check worker logs for discovery and backfill progress:
+  ```bash
+  docker compose logs -f worker | grep -E "gmail|backfill|discover"
+  ```
+- Once backfill completes, open the Webmail inbox (`/mail`) to view synced Gmail folders and messages.
+
+---
+
+## 7. Verification
+
+After connecting an account and creating the identity, Kurrier verifies the connection using the Gmail API.
 
 The Google account card displays the current connection status and available capabilities.
 
@@ -152,7 +168,7 @@ If the OAuth token has expired or been revoked, Kurrier will mark the connection
 
 ---
 
-## 7. Reconnecting an Account
+## 8. Reconnecting an Account
 
 Google access and refresh tokens are stored securely in the Kurrier Vault.
 
@@ -166,7 +182,7 @@ from the Google account card and complete the Google authorization flow again.
 
 ---
 
-## 8. Disconnecting
+## 9. Disconnecting
 
 You can disconnect a Google account from Kurrier by removing the associated account or identity.
 
@@ -178,7 +194,7 @@ Locate the OAuth application used by your Kurrier installation and choose **Remo
 
 ---
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 ### Google Mail OAuth is not configured
 
