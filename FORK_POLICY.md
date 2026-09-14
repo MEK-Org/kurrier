@@ -28,6 +28,6 @@ The synchronization mechanism is implemented in `scripts/sync-upstream.sh`:
 
 - **No Automated Actions Claims**: GitHub Actions registers `schedule` and `workflow_dispatch` workflows exclusively from `.github/workflows/` on the repository's default branch.
 - **Current Repository Topology**: The repository default branch is currently `main`. Because `main` must remain a 1:1 byte-for-byte upstream mirror, no fork-specific workflow files are committed to `main`.
-- **Permission Constraints**: Changing the repository default branch to `mek` requires repository Admin permissions (current worker token has Write permissions). Additionally, creating or updating workflows under `.github/workflows/` requires the `workflow` PAT scope.
+- **Permission Constraints**: Changing the repository default branch to `mek` requires repository Admin permissions (current worker token has Write permissions). Additionally, creating or updating workflows under `.github/workflows/` requires GitHub Actions workflow write permission (fine-grained repository permission 'Workflows: read and write').
 - **Reference Template**: A workflow template is provided at `scripts/workflows/sync-upstream.yml` as a reference. It is not active as an automated scheduler.
 - **Execution**: Upstream synchronization is performed on demand via `scripts/sync-upstream.sh` (or `DRY_RUN=true ./scripts/sync-upstream.sh` for verification).

@@ -6,7 +6,7 @@
 # this workflow is not active as automated CI.
 # To activate in GitHub Actions:
 #   1. Set mek as the repository default branch (requires repository Admin permissions).
-#   2. Copy this file to .github/workflows/sync-upstream.yml (requires workflow PAT scope).
+#   2. Copy this file to .github/workflows/sync-upstream.yml (requires GitHub Actions workflow write permission).
 # For on-demand sync, run scripts/sync-upstream.sh directly.
 
 name: Sync Upstream Main
