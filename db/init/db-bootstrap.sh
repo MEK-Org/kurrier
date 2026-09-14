@@ -74,17 +74,12 @@ SQL
 
 if [ -n "$RLS_PASSWORD" ]; then
   "${PSQL[@]}" -v rls_user="$RLS_USER" -v rls_pw="$RLS_PASSWORD" <<'SQL'
-DO $$
-DECLARE
-  v_user text := :'rls_user';
-  v_pw text := :'rls_pw';
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = v_user) THEN
-    EXECUTE format('CREATE ROLE %I LOGIN', v_user);
-  END IF;
-  EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', v_user, v_pw);
-END
-$$;
+SELECT format('CREATE ROLE %I LOGIN', :'rls_user')
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_roles WHERE rolname = :'rls_user'
+)\gexec
+
+SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'rls_user', :'rls_pw')\gexec
 SQL
 fi
 

@@ -31,9 +31,16 @@ All backing infrastructure services (`postgres`, `baikal-postgres`, `redis`, `ty
 
 Before performing any changes on the host:
 
-1. **Create a Timestamped Backup of `.env`**:
+1. **Create an Explicit Backup of `.env`**:
+   Save a dedicated pre-cutover copy to an exact, deterministic filename (as well as an optional timestamped copy):
    ```bash
-   cp /path/to/kurrier/db/.env /path/to/kurrier/db/.env.backup.$(date +%Y%m%d%H%M%S)
+   # Create canonical pre-cutover backup:
+   cp /path/to/kurrier/db/.env /path/to/kurrier/db/.env.pre-cutover
+
+   # Optional timestamped copy:
+   BACKUP_NAME=".env.backup.$(date +%Y%m%d%H%M%S)"
+   cp /path/to/kurrier/db/.env "/path/to/kurrier/db/$BACKUP_NAME"
+   echo "Timestamped backup saved as: $BACKUP_NAME"
    ```
 
 2. **Verify Required Secret Variables**:
@@ -110,7 +117,11 @@ Choose one of two configuration methods:
   GOOGLE_MAIL_CLIENT_ID=123456789-abcdef.apps.googleusercontent.com
   GOOGLE_MAIL_CLIENT_SECRET=GOCSPX-xxxxxxxxxxxxxxxx
   ```
-  Restart the stack (`docker compose restart web worker`).
+  Recreate the application containers so Docker Compose re-reads `db/.env` and injects the updated environment variables into the container processes:
+  ```bash
+  docker compose up -d --force-recreate web worker
+  ```
+  *(Important: `docker compose restart` only cycles existing containers with their original environment intact; it does **not** reload `.env` files or recreate containers. Running `docker compose up -d --force-recreate web worker` recreates only the application containers with the new environment variables while leaving PostgreSQL, Redis, and storage infrastructure undisturbed).*
 
 - **Method B (Dashboard Vault)**:
   Log into Kurrier as a workspace admin, navigate to **Dashboard → Providers → Google**, click **Configure Google OAuth**, enter your Client ID and Client Secret, and click **Save**. Credentials will be stored in the workspace Vault.
@@ -225,7 +236,7 @@ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/v1/health
 
 ## 6. Rollback Plan
 
-If migration fails or stack stability issues arise:
+If migration fails or stack stability issues arise, roll back cleanly without destroying data:
 
 ### Step 1: Shut Down Full Stack
 ```bash
@@ -234,14 +245,26 @@ docker compose down
 ```
 
 ### Step 2: Restore Previous `.env`
+Restore the specific pre-cutover configuration file directly (never rely on ambiguous shell globs like `*.backup.*`):
 ```bash
-cp .env.backup.* .env
+# Restore from canonical pre-cutover backup:
+cp .env.pre-cutover .env
+
+# Or restore using the exact timestamped backup name recorded during preparation:
+# cp .env.backup.<TIMESTAMP> .env
 ```
 
-### Step 3: (Optional) Revert Volumes
-If database corruption occurred during initial testing, reset the local volume directories:
+### Step 3: Quarantine & Preserve Stack State (Do Not Blindly Wipe)
+If the new stack encountered data or runtime errors, do not blindly delete volume directories with `rm -rf`. Instead, quarantine the runtime data directories by renaming them into a timestamped directory so all diagnostic state is preserved for forensic recovery:
 ```bash
-rm -rf ./data ./redis_data ./typesense-data ./garage/data ./garage/meta ./baikal-data ./dav_data
+QUARANTINE_DIR="./quarantine_$(date +%Y%m%d%H%M%S)"
+mkdir -p "$QUARANTINE_DIR"
+for dir in ./data ./redis_data ./typesense-data ./garage/data ./garage/meta ./baikal-data ./dav_data; do
+  if [ -d "$dir" ]; then
+    mv "$dir" "$QUARANTINE_DIR/$(basename "$dir")"
+  fi
+done
+echo "Attempted stack state safely quarantined in $QUARANTINE_DIR"
 ```
 
 ### Step 4: Relaunch UI-Only Preview
