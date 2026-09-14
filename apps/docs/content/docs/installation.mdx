@@ -31,17 +31,23 @@ Clone the repository and copy the example environment file:
 ```bash
 git clone --single-branch https://github.com/kurrier-org/kurrier.git
 cd kurrier/db
-cp example.env .env
-cp -r init/* .
+# For new installations, copy the example environment file.
+# If updating or cutting over from an existing deployment, preserve your existing .env!
+cp -n example.env .env || true
 docker compose up -d
 ```
 
-Open the .env file and update your secrets and passwords. You can also use the built-in secrets generator below to create a secure, production-ready passwords and secrets.
+Open the `.env` file and update your secrets and passwords. If you have an existing `.env` from a preview installation, keep your existing keys (such as `JWT_SECRET` and `APP_SECRET_ENCRYPTION_KEY`) intact. You can also use the built-in secrets generator below to create secure passwords and secrets.
 
 ```bash
 JWT_SECRET=replace_with_your_jwt_secret_key
 APP_SECRET_ENCRYPTION_KEY=replace_with_your_app_secret_encryption_key
 ```
+
+<Callout type="info">
+    **Deterministic Bootstrap & Private Port Bindings**:
+    Kurrier's Compose configuration automatically coordinates startup: `postgres` initializes its healthcheck, `migrate` runs all database migrations and applies role passwords, and only then do `web` and `worker` launch. Backing infrastructure services (Postgres, Redis, Typesense, Garage S3, and Baikal) are bound to `127.0.0.1` so they are never exposed to the public internet.
+</Callout>
 
 ### 🔐 Generate Secrets Automatically
 
@@ -166,3 +172,39 @@ Once Docker finishes starting up, open the following URLs in your browser:
 <Callout type="info">
     To access Kurrier dashboard, signup and create your user account on http://localhost:3000/auth/signup
 </Callout>
+
+---
+
+### 🩺 Health Checks and Verification
+
+To verify that the full stack and migration bootstrap initialized correctly:
+
+1. Check running container status:
+   ```bash
+   docker compose ps
+   ```
+   All services (`postgres`, `redis`, `typesense`, `garage`, `baikal-postgres`, `dav`, `web`, `worker`) should show as running/healthy, and `migrate` should show as `Exited (0)`.
+
+2. Confirm database migration success:
+   ```bash
+   docker compose logs migrate
+   ```
+   Should conclude with:
+   `✅ All migrations done.`
+   `✅ Bootstrap complete.`
+
+3. Check Postgres connection:
+   ```bash
+   docker compose exec postgres pg_isready -U postgres -d postgres
+   ```
+
+4. Check Redis responsiveness:
+   ```bash
+   docker compose exec redis redis-cli -a "$REDIS_PASSWORD" ping
+   ```
+
+5. Check Web UI HTTP status:
+   ```bash
+   curl -fsS -o /dev/null -w "%{http_code}\n" http://localhost:3000/auth/login
+   ```
+   Expected response: `200`.

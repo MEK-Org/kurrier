@@ -1,8 +1,8 @@
-CREATE SCHEMA "auth";
+CREATE SCHEMA IF NOT EXISTS "auth";
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'kurrier') THEN
-CREATE ROLE kurrier LOGIN PASSWORD 'replace_with_your_password';
+CREATE ROLE kurrier LOGIN;
 END IF;
 END
 $$;

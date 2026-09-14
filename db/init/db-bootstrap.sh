@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Resolve migrations directory from multiple possible mount points or relative location
+if [ -d "${MIGRATIONS_DIR:-}" ]; then
+  MIGRATIONS_PATH="$MIGRATIONS_DIR"
+elif [ -d "$SCRIPT_DIR/migrations" ]; then
+  MIGRATIONS_PATH="$SCRIPT_DIR/migrations"
+elif [ -d "/scripts/migrations" ]; then
+  MIGRATIONS_PATH="/scripts/migrations"
+elif [ -d "/db/init/migrations" ]; then
+  MIGRATIONS_PATH="/db/init/migrations"
+else
+  echo "❌ Error: Could not locate migrations directory." >&2
+  exit 1
+fi
+
 if [ -n "${DATABASE_URL:-}" ]; then
   echo "🟡 Waiting for Postgres via DATABASE_URL..."
 
@@ -10,6 +26,10 @@ if [ -n "${DATABASE_URL:-}" ]; then
 
   PSQL=(psql "$DATABASE_URL" -v ON_ERROR_STOP=1)
 else
+  PGHOST="${PGHOST:-postgres}"
+  PGUSER="${PGUSER:-${POSTGRES_USER:-postgres}}"
+  PGDATABASE="${PGDATABASE:-${POSTGRES_DB:-postgres}}"
+
   echo "🟡 Waiting for Postgres at $PGHOST..."
 
   until pg_isready -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" >/dev/null 2>&1; do
@@ -27,6 +47,47 @@ fi
 
 echo "✅ Postgres is ready."
 
+# Determine RLS user and password without exposing secrets in logs
+RLS_USER="kurrier"
+RLS_PASSWORD=""
+
+if [ -n "${DATABASE_RLS_URL:-}" ]; then
+  # Parse credentials from DATABASE_RLS_URL: postgresql://[user[:password]@]host...
+  url_without_proto="${DATABASE_RLS_URL#*://}"
+  userpass="${url_without_proto%%@*}"
+  if [[ "$userpass" == *":"* ]]; then
+    RLS_USER="${userpass%%:*}"
+    RLS_PASSWORD="${userpass#*:}"
+  elif [ -n "$userpass" ] && [ "$userpass" != "$url_without_proto" ]; then
+    RLS_USER="$userpass"
+  fi
+fi
+
+if [ -z "$RLS_PASSWORD" ]; then
+  RLS_PASSWORD="${RLS_CLIENT_PASSWORD:-${POSTGRES_PASSWORD:-}}"
+fi
+
+echo "🧩 Ensuring auth schema and database roles exist..."
+"${PSQL[@]}" <<'SQL'
+CREATE SCHEMA IF NOT EXISTS "auth";
+SQL
+
+if [ -n "$RLS_PASSWORD" ]; then
+  "${PSQL[@]}" -v rls_user="$RLS_USER" -v rls_pw="$RLS_PASSWORD" <<'SQL'
+DO $$
+DECLARE
+  v_user text := :'rls_user';
+  v_pw text := :'rls_pw';
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = v_user) THEN
+    EXECUTE format('CREATE ROLE %I LOGIN', v_user);
+  END IF;
+  EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', v_user, v_pw);
+END
+$$;
+SQL
+fi
+
 echo "🧩 Ensuring migrations table exists..."
 "${PSQL[@]}" <<'SQL'
 CREATE TABLE IF NOT EXISTS public.migrations (
@@ -35,8 +96,8 @@ CREATE TABLE IF NOT EXISTS public.migrations (
 );
 SQL
 
-echo "🚀 Applying new migrations..."
-for file in $(ls /scripts/migrations/*.sql | sort); do
+echo "🚀 Applying new migrations from $MIGRATIONS_PATH..."
+for file in $(ls "$MIGRATIONS_PATH"/*.sql | sort); do
   base=$(basename "$file")
   version="${base%.sql}"
 
