@@ -194,6 +194,14 @@ Choose one of two configuration methods:
 - **Method B (Dashboard Vault)**:
   Log into Kurrier as a workspace admin, navigate to **Dashboard → Providers → Google**, click **Configure Google OAuth**, enter your Client ID and Client Secret, and click **Save**. Credentials will be stored in the workspace Vault.
 
+> [!NOTE]
+> **Credential Precedence & Resolution Order**:
+> Kurrier resolves Google OAuth credentials at runtime via `resolveGoogleOAuthConfig(workspaceId)` with the following strict order of precedence:
+> 1. **Workspace Vault (Method B - Highest Precedence / Wins)**: Kurrier first queries the `secrets_meta` table for a user-managed secret named `GOOGLE_MAIL_OAUTH_CONFIG` in the active workspace. If present and successfully decrypted, these credentials are used immediately for all OAuth authorization and API operations.
+> 2. **Environment Variables (Method A - Fallback)**: If no valid workspace Vault configuration exists, Kurrier falls back to `GOOGLE_MAIL_CLIENT_ID` and `GOOGLE_MAIL_CLIENT_SECRET` (or `OIDC_GOOGLE_CLIENT_ID` / `OIDC_GOOGLE_CLIENT_SECRET`) defined in `db/.env`.
+>
+> **Operational Impact**: When both sources are present, the **Dashboard Vault always wins**. If rotating credentials via `db/.env` after previously saving credentials in the Dashboard Vault, the application will continue using the Vault credentials until updated in **Dashboard → Providers → Google** (or until the `GOOGLE_MAIL_OAUTH_CONFIG` secret is removed from the Vault).
+
 ### Step 4.3: Linking Google Account
 Once credentials are saved, the dashboard activates the **Add Google Account** button:
 1. Click **Add Google Account**.
