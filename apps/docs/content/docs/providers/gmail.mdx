@@ -134,9 +134,31 @@ Once Google Mail OAuth application credentials are confirmed and configured:
 
 ---
 
-## 6. Verification
+## 6. Creating the Email Identity & Initial Sync
 
-After connecting an account, Kurrier verifies the connection using the Gmail API.
+Connecting the Google account links credentials to your workspace, but message syncing begins once an **Email Identity** is created:
+
+1. Navigate to:
+   > **Dashboard → Identities** (`/dashboard/identities`)
+2. Click **Add Email Identity**.
+3. Select your connected **Google account** from the provider dropdown.
+4. Set Display Name (optional) and Daily Quota.
+5. Click **Add Email Identity** to save.
+
+Once saved, Kurrier enqueues background discovery and sync jobs (`gmail:backfill-discover` and `gmail:backfill-account`). The worker processes these jobs to discover Gmail labels and stream message threads into Kurrier.
+
+### Monitoring Initial Sync
+- Check worker logs for discovery and backfill progress:
+  ```bash
+  docker compose logs -f worker | grep -E "gmail|backfill|discover"
+  ```
+- Once backfill completes, open the Webmail inbox (`/mail`) to view synced Gmail folders and messages.
+
+---
+
+## 7. Verification
+
+After connecting an account and creating the identity, Kurrier verifies the connection using the Gmail API.
 
 The Google account card displays the current connection status and available capabilities.
 
@@ -146,7 +168,7 @@ If the OAuth token has expired or been revoked, Kurrier will mark the connection
 
 ---
 
-## 7. Reconnecting an Account
+## 8. Reconnecting an Account
 
 Google access and refresh tokens are stored securely in the Kurrier Vault.
 
@@ -160,7 +182,7 @@ from the Google account card and complete the Google authorization flow again.
 
 ---
 
-## 8. Disconnecting
+## 9. Disconnecting
 
 You can disconnect a Google account from Kurrier by removing the associated account or identity.
 
@@ -172,7 +194,7 @@ Locate the OAuth application used by your Kurrier installation and choose **Remo
 
 ---
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 ### Google Mail OAuth is not configured
 

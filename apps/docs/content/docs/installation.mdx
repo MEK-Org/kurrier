@@ -200,11 +200,19 @@ To verify that the full stack and migration bootstrap initialized correctly:
 
 4. Check Redis responsiveness:
    ```bash
-   docker compose exec redis redis-cli -a "$REDIS_PASSWORD" ping
+   REDIS_PW=$(grep -E '^REDIS_PASSWORD=' .env | head -n1 | cut -d= -f2- | tr -d '\r"')
+   docker compose exec redis redis-cli -a "$REDIS_PW" ping
    ```
+   Expected response: `PONG`.
 
 5. Check Web UI HTTP status:
    ```bash
    curl -fsS -o /dev/null -w "%{http_code}\n" http://localhost:3000/auth/login
    ```
    Expected response: `200`.
+
+6. Check Worker API proxy connectivity:
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/kurrier/me
+   ```
+   Expected response: `401` (Unauthorized: confirms Next.js is actively proxying API routes to the worker).

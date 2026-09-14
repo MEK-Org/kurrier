@@ -1,14 +1,19 @@
 # Deployment & Cutover Guide: Moving to Full Gmail-Capable Stack
 
-This guide provides concrete host instructions for transitioning an existing UI-only preview deployment to a full, self-hosted, Gmail-capable Kurrier stack using Docker Compose.
+This guide provides concrete host instructions for transitioning an existing preview deployment to a full, self-hosted, Gmail-capable Kurrier stack using Docker Compose.
 
 ---
 
-## 1. Architectural Overview & Changes
+## 1. Architectural Overview & Live Host Topology
 
-The existing preview environment runs only the web frontend (`kurrier-web`), with API routes proxying to a backend worker (`http://worker:3001`) that was previously absent, resulting in HTTP 500 errors on API requests.
+### Live Topology Findings
+Based on live environment diagnostics:
+- **Docker Engine and Docker Compose are absent** from the preview host.
+- The existing preview is running directly on the host as a systemd service: `kurrier-ui.service` (listening on port 3000), not a Docker container.
+- The worker backend (`http://worker:3001`) was absent, resulting in HTTP 500 errors on API routes (such as `/api/kurrier/me`) when Next.js attempted to proxy backend requests.
 
-The full stack introduces:
+### Full Stack Architecture
+The full Docker Compose stack introduces:
 - **`web`**: Next.js user interface (`ghcr.io/kurrier-org/kurrier-web:v4.1.0`), bound to `${WEB_PORT:-3000}:3000`.
 - **`worker`**: Nitro API engine (`ghcr.io/kurrier-org/kurrier-worker:v4.1.0`), bound privately to `127.0.0.1:${NITRO_PORT:-3001}:3001`.
 - **`postgres`**: Core relational database with Row-Level Security (RLS) support, bound privately to `127.0.0.1:${POSTGRES_PORT:-5432}:5432`.
@@ -52,7 +57,15 @@ Before performing any changes on the host:
    - `DATABASE_URL`: `postgresql://postgres:<POSTGRES_PASSWORD>@postgres:5432/postgres`
    - `DATABASE_RLS_URL`: `postgresql://kurrier:<POSTGRES_PASSWORD>@postgres:5432/postgres`
 
-3. **Confirm Additional Variables**:
+3. **RLS Role Credentials (Secret-Safe & Percent-Decoded)**:
+   You can supply explicit client credentials in `db/.env` (recommended if passwords contain reserved URL characters):
+   ```bash
+   RLS_CLIENT_USER=kurrier
+   RLS_CLIENT_PASSWORD=your_rls_password_here
+   ```
+   If omitted, `db/init/db-bootstrap.sh` automatically extracts the user and password from `DATABASE_RLS_URL` and RFC 3986 percent-decodes them (for example, `p%40ss%3Aword` decodes to `p@ss:word`).
+
+4. **Confirm Additional Variables**:
    Ensure the following additions are present in `db/.env`:
    ```bash
    BAIKAL_POSTGRES_PASSWORD=strong_baikal_password
@@ -62,7 +75,47 @@ Before performing any changes on the host:
 
 ---
 
-## 3. Google Cloud OAuth Prerequisites & Setup Sequence
+## 3. Host Preflight & Docker Installation
+
+Because Docker Engine and Docker Compose are not pre-installed on the preview host, install them prior to cutover:
+
+```bash
+# 1. Install prerequisites
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl gnupg lsb-release
+
+# 2. Add Docker's official GPG key
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+# 3. Add the Docker apt repository
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# 4. Install Docker Engine, CLI, and Compose plugin
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# 5. Enable and start Docker daemon
+sudo systemctl enable --now docker
+
+# 6. (Optional) Add operator user to the docker group
+sudo usermod -aG docker "$USER"
+```
+
+### Preflight Verification
+Verify that Docker and Compose are operational:
+```bash
+docker --version
+docker compose version
+sudo docker info >/dev/null && echo "✅ Docker daemon is running"
+```
+
+---
+
+## 4. Google Cloud OAuth Prerequisites & Setup Sequence
 
 Before connecting Gmail or Google Workspace accounts, you must create and register an OAuth 2.0 Web Application in the Google Cloud Console.
 
@@ -70,7 +123,7 @@ Before connecting Gmail or Google Workspace accounts, you must create and regist
 > **No Usable OAuth Link Prior to Configuration**:
 > The interactive "Add Google Account" authorization link (`/api/oauth/google/connect`) requires valid Google OAuth application credentials. If you click the link before configuring a Client ID and Client Secret, the server will raise an error (`Google Mail OAuth is not configured`). The Kurrier UI displays a configuration modal until credentials exist.
 
-### Google Cloud Console Steps
+### Step 4.1: Google Cloud Console Setup
 
 1. **Project Creation / Selection**:
    - Go to the [Google Cloud Console](https://console.cloud.google.com/).
@@ -107,7 +160,7 @@ Before connecting Gmail or Google Workspace accounts, you must create and regist
      - Production: `https://mail.example.com/api/oauth/google/callback` (must match exact host and protocol)
    - Click **Create** and record the **Client ID** and **Client Secret**.
 
-### Applying Credentials to Kurrier
+### Step 4.2: Applying Credentials to Kurrier
 
 Choose one of two configuration methods:
 
@@ -126,28 +179,74 @@ Choose one of two configuration methods:
 - **Method B (Dashboard Vault)**:
   Log into Kurrier as a workspace admin, navigate to **Dashboard → Providers → Google**, click **Configure Google OAuth**, enter your Client ID and Client Secret, and click **Save**. Credentials will be stored in the workspace Vault.
 
-Once credentials are saved, the dashboard activates the **Add Google Account** button.
+### Step 4.3: Linking Google Account
+Once credentials are saved, the dashboard activates the **Add Google Account** button:
+1. Click **Add Google Account**.
+2. Complete the Google OAuth authentication and grant the requested permissions.
+3. Upon redirection to `/dashboard/providers/google`, the account appears under **Connected Accounts** with status `connected`.
+
+### Step 4.4: Creating Email Identity (Queues Discovery & Backfill)
+> [!IMPORTANT]
+> OAuth linkage alone does **not** begin syncing email! You must create an Email Identity tied to the Google account:
+1. In the Kurrier navigation menu, go to **Dashboard → Identities** (or `/dashboard/identities`).
+2. Click **Add Email Identity**.
+3. In the modal form, select the connected **Google account** from the provider dropdown.
+4. Set Display Name (optional) and Daily Quota.
+5. Click **Add Email Identity** (or Submit).
+6. Kurrier saves the identity and immediately enqueues two background BullMQ jobs to Redis:
+   - `gmail:backfill-discover`: Discovers Gmail labels, folders, and message identifiers.
+   - `gmail:backfill-account`: Streams message headers, bodies, and attachments into Postgres and Garage object storage.
+
+### Step 4.5: Verifying Initial Sync
+1. **Monitor Worker Logs**:
+   Observe initial label discovery and message ingestion:
+   ```bash
+   docker compose logs -f worker | grep -E "gmail|backfill|discover"
+   ```
+   Expected:
+   ```text
+   [gmail:backfill-discover] discovered mailboxes for identity <id>
+   [gmail:backfill-account] backfilling messages for identity <id>
+   ```
+2. **Verify Database Mailbox Records**:
+   ```bash
+   docker compose exec postgres psql -U postgres -d postgres -c "SELECT id, name, slug, kind FROM mailboxes;"
+   ```
+   Confirm system mailboxes (`inbox`, `sent`, `drafts`, `trash`, `archive`) exist for the Google identity.
+3. **Verify Webmail Inbox**:
+   Navigate to `http://localhost:3000/mail` (or `http://localhost:3000/`), select the newly created Google identity, and confirm that Gmail message threads and folder hierarchies appear in the UI.
 
 ---
 
-## 4. Host Cutover & Start Procedure
+## 5. Host Cutover Procedure
 
-### Step 1: Update Repository on Host
-Fetch the updated `mek` branch containing the bootstrap and port fixes:
+### Step 1: Update Repository on Host (Verified Fast-Forward Only)
+Fetch latest commits and advance the local branch with strict fast-forward verification:
 ```bash
 cd /path/to/kurrier
 git fetch origin
+
+# Switch to mek and ensure local branch fast-forwards strictly to origin/mek
 git checkout mek
+git pull --ff-only origin mek
+
+# Verify exact head SHA against the merged pull request commit:
+echo "Current commit: $(git rev-parse HEAD)"
+# Expected: matches merged PR head commit SHA on origin/mek
 ```
 
-### Step 2: Stop Existing UI-Only Preview
-Identify and stop the preview container:
+### Step 2: Stop and Disable Existing UI-Only Preview Systemd Service
+The preview host runs the UI preview as a systemd unit (`kurrier-ui.service`). Stop and disable it to release port 3000 and prevent port conflicts on reboot:
 ```bash
-# If running via standalone docker run:
-docker stop kurrier-preview && docker rm kurrier-preview
+# Set preview service name (substitute if named differently in host environment):
+PREVIEW_SERVICE="${PREVIEW_SYSTEMD_SERVICE:-kurrier-ui.service}"
 
-# If running via compose in preview directory:
-docker compose down
+echo "Stopping preview systemd service: $PREVIEW_SERVICE"
+sudo systemctl stop "$PREVIEW_SERVICE"
+sudo systemctl disable "$PREVIEW_SERVICE"
+
+# Verify port 3000 is free:
+sudo ss -tulpn | grep :3000 || echo "✅ Port 3000 is free"
 ```
 
 ### Step 3: Launch the Full Stack
@@ -168,10 +267,10 @@ Expected output:
 🧩 Ensuring auth schema and database roles exist...
 🧩 Ensuring migrations table exists...
 🚀 Applying new migrations from /scripts/migrations...
-🟢 Running 001_migration ...
-🟢 Running 002_migration ...
+🟢 Running 001_migration.sql ...
+🟢 Running 002_migration.sql ...
 ...
-🟢 Running 008_migration ...
+🟢 Running 008_migration.sql ...
 ✅ All migrations done.
 ✅ Bootstrap complete.
 ```
@@ -179,7 +278,7 @@ The `migrate` container will exit with code 0 once complete. `web` and `worker` 
 
 ---
 
-## 5. Health Checks & Verification
+## 6. Health Checks & Verification
 
 Run the following checks on the host to verify system health:
 
@@ -202,8 +301,10 @@ docker compose exec baikal-postgres pg_isready -U baikal -d baikal
 **Expected**: `baikal-postgres:5432 - accepting connections` (Exit code: `0`).
 
 ### 4. Redis Cache Health
+Extract the configured Redis password directly from `.env` (since `docker compose` does not export environment variables into the host shell):
 ```bash
-docker compose exec redis redis-cli -a "$REDIS_PASSWORD" ping
+REDIS_PW=$(grep -E '^REDIS_PASSWORD=' .env | head -n1 | cut -d= -f2- | tr -d '\r"')
+docker compose exec redis redis-cli -a "$REDIS_PW" ping
 ```
 **Expected**: `PONG` (Exit code: `0`).
 
@@ -225,18 +326,19 @@ curl -fsS -o /dev/null -w "%{http_code}\n" http://localhost:3000/auth/login
 ```
 **Expected**: `200`.
 
-### 8. Worker Proxy Health (Verify UI Proxy to Worker)
-Verify that API routes no longer return HTTP 500:
+### 8. Worker Proxy Health (Next.js Proxy to Nitro Worker)
+Verify that the Next.js API proxy route connects to the worker rather than failing with HTTP 500:
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/v1/health
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/kurrier/me
 ```
-**Expected**: `200` or valid API response (non-500).
+**Expected**: `401` (`Unauthorized: Missing or invalid Authorization header`).
+*(Context: Next.js proxies `/api/kurrier/*` directly to `${WORKER_URL}/api/kurrier/*`. When the worker service is absent or down, Next.js returns HTTP 500. Receiving HTTP 401 proves the worker is healthy, receiving proxied traffic from Next.js, and enforcing authentication. With a valid Bearer token, it returns `200` with user details).*
 
 ---
 
-## 6. Rollback Plan
+## 7. Rollback Plan
 
-If migration fails or stack stability issues arise, roll back cleanly without destroying data:
+If unexpected cutover or runtime issues occur, roll back cleanly without destroying data:
 
 ### Step 1: Shut Down Full Stack
 ```bash
@@ -267,15 +369,13 @@ done
 echo "Attempted stack state safely quarantined in $QUARANTINE_DIR"
 ```
 
-### Step 4: Relaunch UI-Only Preview
-Restart the preview container:
+### Step 4: Re-enable and Restart UI-Only Preview Systemd Service
+Re-enable and restart the original preview systemd service:
 ```bash
-docker run -d \
-  --name kurrier-preview \
-  --restart unless-stopped \
-  -p 3000:3000 \
-  --env-file .env \
-  ghcr.io/kurrier-org/kurrier-web:v4.1.0
+PREVIEW_SERVICE="${PREVIEW_SYSTEMD_SERVICE:-kurrier-ui.service}"
+sudo systemctl enable "$PREVIEW_SERVICE"
+sudo systemctl start "$PREVIEW_SERVICE"
+sudo systemctl status "$PREVIEW_SERVICE" --no-pager
 ```
 
 ### Step 5: Verify Preview Health

@@ -116,6 +116,8 @@ services:
       PGDATABASE: ${POSTGRES_DB:-postgres}
       DATABASE_URL: ${DATABASE_URL:-}
       DATABASE_RLS_URL: ${DATABASE_RLS_URL:-}
+      RLS_CLIENT_USER: ${RLS_CLIENT_USER:-}
+      RLS_CLIENT_PASSWORD: ${RLS_CLIENT_PASSWORD:-}
     volumes:
       - ./init:/scripts
     entrypoint: [ "/bin/bash", "/scripts/db-bootstrap.sh" ]

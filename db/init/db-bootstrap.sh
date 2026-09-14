@@ -47,24 +47,35 @@ fi
 
 echo "✅ Postgres is ready."
 
-# Determine RLS user and password without exposing secrets in logs
-RLS_USER="kurrier"
-RLS_PASSWORD=""
+# Helper function to decode RFC 3986 percent-encoded characters in URL components
+urldecode() {
+  local data="${1//+/ }"
+  printf '%b' "${data//%/\\x}"
+}
 
-if [ -n "${DATABASE_RLS_URL:-}" ]; then
+# Determine RLS user and password without exposing secrets in logs
+# Priority 1: Explicit client credentials via RLS_CLIENT_USER / RLS_CLIENT_PASSWORD
+RLS_USER="${RLS_CLIENT_USER:-kurrier}"
+RLS_PASSWORD="${RLS_CLIENT_PASSWORD:-}"
+
+# Priority 2: Extract and RFC 3986 percent-decode credentials from DATABASE_RLS_URL
+if [ -z "$RLS_PASSWORD" ] && [ -n "${DATABASE_RLS_URL:-}" ]; then
   # Parse credentials from DATABASE_RLS_URL: postgresql://[user[:password]@]host...
   url_without_proto="${DATABASE_RLS_URL#*://}"
   userpass="${url_without_proto%%@*}"
   if [[ "$userpass" == *":"* ]]; then
-    RLS_USER="${userpass%%:*}"
-    RLS_PASSWORD="${userpass#*:}"
+    parsed_user="${userpass%%:*}"
+    parsed_pw="${userpass#*:}"
+    [ -n "$parsed_user" ] && RLS_USER="$(urldecode "$parsed_user")"
+    RLS_PASSWORD="$(urldecode "$parsed_pw")"
   elif [ -n "$userpass" ] && [ "$userpass" != "$url_without_proto" ]; then
-    RLS_USER="$userpass"
+    RLS_USER="$(urldecode "$userpass")"
   fi
 fi
 
+# Priority 3: Fall back to POSTGRES_PASSWORD if no RLS password is provided
 if [ -z "$RLS_PASSWORD" ]; then
-  RLS_PASSWORD="${RLS_CLIENT_PASSWORD:-${POSTGRES_PASSWORD:-}}"
+  RLS_PASSWORD="${POSTGRES_PASSWORD:-}"
 fi
 
 echo "🧩 Ensuring auth schema and database roles exist..."
