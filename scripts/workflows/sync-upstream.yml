@@ -1,3 +1,14 @@
+# Workflow Template: Safe Upstream Main Sync
+# NOTE: This file is a reference template provided under scripts/workflows/.
+# GitHub Actions only registers schedule and workflow_dispatch events from .github/workflows/
+# on the repository's default branch. Because MEK-Org/kurrier preserves main as a clean
+# upstream mirror (with no fork-specific workflow files) and the default branch is currently main,
+# this workflow is not active as automated CI.
+# To activate in GitHub Actions:
+#   1. Set mek as the repository default branch (requires repository Admin permissions).
+#   2. Copy this file to .github/workflows/sync-upstream.yml (requires workflow PAT scope).
+# For on-demand sync, run scripts/sync-upstream.sh directly.
+
 name: Sync Upstream Main
 
 on:
